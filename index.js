@@ -1,29 +1,26 @@
 'use strict';
 
 const crypto = require('crypto');
+const normalize = (number) => 360 * (number / 0xFFFFFFFF);
 class HashRing {
-  constructor(nodes = 3, virtualNodes = 100) {
+  constructor(nodes = 2, virtualNodes = 10) {
     this.nodes = nodes;
     this.virtualNodes = virtualNodes;
 
     const nodeList = this.nodeList = Array(virtualNodes);
-    const ring = this.ring = Array(virtualNodes);
     const vnodeToNodeMap = this.vnodeToNodeMap = Object.create(null);
+    const ring = this.ring = Array(nodes * virtualNodes);
 
-    // build the hash ring comprised of virtual node length
-    // and distributed evenly from zero to a max 32-bit unsigned integer
-    for (let i = 0, min = 0, max = 0xFFFFFFFF; i < virtualNodes; i++) {
-      nodeList[i] = i % nodes;
-      ring[i] = min + i * (max - min) / (virtualNodes - 1) >>> 0;
+    // assign node partitions along the ring
+    for (let i = 0, j = 0; i < nodes; i++) {
+      for (let v = 0; v < virtualNodes; v++) {
+        let nodeValue = this.getHashValue(this.getHashBuffer(`${i}${v}`));
+        vnodeToNodeMap[nodeValue] = i;
+        ring[j] = nodeValue;
+        j++;
+      }
     }
-    ring.pop();
-    ring.reverse();
-
-    // build a map of all virtual nodes to their node id
-    nodeList.forEach((nodeId, vnodeId) => {
-      const vnodeKey = ring[vnodeId];
-      vnodeToNodeMap[vnodeKey] = nodeId;
-    });
+    ring.sort((a, b) => a > b ? -1 : 1);
   }
     
   /**
@@ -34,7 +31,6 @@ class HashRing {
   getHashBuffer(str) {
     return crypto.createHash('md5').update(str).digest();
   }
-
 
   /**
    * Create a 32-bit unsigned integer from an md5 digest
@@ -54,9 +50,12 @@ class HashRing {
     const keyHashValue = this.getHashValue(this.getHashBuffer(key));
     const { ring, vnodeToNodeMap } = this;
     for (let node of ring) {
-      if (keyHashValue > node) {
+      if (keyHashValue >= node) {
         return vnodeToNodeMap[node];
       }
     }
+    return vnodeToNodeMap[ring[0]];
   }
 }
+
+module.exports = HashRing;
