@@ -1,13 +1,20 @@
 {
   "name": "node-hashring",
-  "version": "1.0.0",
-  "description": "",
+  "version": "1.0.1",
+  "description": "A consistent hashing ring with binary search",
   "main": "index.js",
   "scripts": {
     "test": "npx mocha --reporter spec --exit test.js"
   },
-  "author": "",
-  "license": "ISC",
+  "author": {
+    "name": "Nick Riley",
+    "url": "https://www.sparkida.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sparkida/node-hashring"
+  },
+  "license": "MIT",
   "devDependencies": {
     "mocha": "^9.1.3"
   },
