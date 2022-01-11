@@ -1,101 +1,159 @@
 'use strict';
 
 const crypto = require('crypto');
-const sortAscending = (a, b) => a > b ? -1 : 1;
+const sortDescending = (a, b) => a > b ? 1 : -1;
+const removeDuplicates = (val, index, arr) => arr.indexOf(val) === index; 
+const murmur3 = require('./murmurhash3');
 
 /**
- * A generic consistent hashing ring with partitions
- * for more even distribution (virtual nodes) and partitions
- * for performing an initial lookup to improve performance
+ * A generic consistent hashing ring with replicas
+ * for more even distribution (virtual nodes) and binary
+ * searching for best performance
  */
 class HashRing {
   constructor(nodes, virtualNodes = 80) {
-    this.nodes = nodes;
+    this.nodes = nodes.map(String).filter(removeDuplicates);
+    this.nodeMap = Object.create(null);
     this.virtualNodes = virtualNodes;
+
+    // keep a list of node names that have been added
+    nodes.forEach(node => {
+      this.nodeMap[node] = 1;
+    });
 
     const nodeSize = this.nodeSize = nodes.length;
     const nodeList = this.nodeList = Array(virtualNodes);
     const vnodeToNodeMap = this.vnodeToNodeMap = Object.create(null);
     const ring = this.ring = Array(nodeSize * virtualNodes);
-
-    //console.log(nodeSize);
-    // create 2^4 bins that will represent all bit
-    // permutations in the first four bits
-    const bins = 2 ** 4;
-    const binTree = this.binTree = Object.create(null);
-    for (let i = 0; i < bins; i++) {
-      binTree[i] = [];
-    }
+    const assigned = this.assigned = Object.create(null);
 
     // assign node partitions along the ring
     for (let i = 0, j = 0; i < nodeSize; i++) {
       let nodeId = nodes[i];
       for (let v = 0; v < virtualNodes; v++) {
-        let nodeValue = this.getHashValue(this.getHashBuffer(`${nodeId}${v}`));
-        //console.log(nodeValue, nodeValue & 0xF);
-        binTree[nodeValue & 0xF].push(nodeValue);
+        let nodeValue = this.getHashValue(`${nodeId}.${v}`);
+        if (assigned[nodeValue]) {
+          continue;
+        }
+        assigned[nodeValue] = 1;
         vnodeToNodeMap[nodeValue] = nodeId;
         ring[j] = nodeValue;
         j++;
       }
     }
-    for (let i = 0; i < bins; i++) {
-      binTree[i].sort(sortAscending);
-    }
-    ring.sort(sortAscending);
+    ring.sort(sortDescending);
   }
     
   /**
-   * Return a 128-bit md5 hash digest of a string
+   * Return a 32-bit unsigned integer
    * @params {string}
-   * @returns {Buffer}
+   * @returns {integer}
    */
-  getHashBuffer(str) {
-    return crypto.createHash('md5').update(str).digest();
+  getHashValue(str) {
+    return murmur3(str, 0xFFF);
   }
 
   /**
-   * Create a 32-bit unsigned integer from an md5 digest.
-   * This is an ideal solution for dimensiality reduction
-   * whereas the search space of 2^128 is impractical.
-   * @params {Buffer}
-   * @returns {Integer}
+   * Perform a binary search to find the ring index
+   * that contains the hashed key value.
+   * Thanks to @joki(https://stackoverflow.com/a/41956372/1934975)
    */
-  getHashValue(buf) {
-    return (
-      (buf.readUInt32BE(0) << 24)
-      | (buf.readUInt32BE(1) << 16)
-      | (buf.readUInt32BE(2) << 8)
-      | buf.readUInt32BE(3)
-    ) >>> 0;
-  }
-
-  /**
-   * Will generate a hash of the key and use the first
-   * four bits as a partition key to find the associatied
-   * bin. Next, it will run through the hash ring partition
-   * and find the virtual node that is less than the current
-   * hashed key value and return the node that is assigned
-   */
-  findNode(key) {
-    const keyHashValue = this.getHashValue(this.getHashBuffer(key));
-    const { ring, binTree, vnodeToNodeMap } = this;
-    const partitionKey = keyHashValue & 0xF;
-    for (let node of binTree[partitionKey]) {
-      if (keyHashValue >= node) {
-        return vnodeToNodeMap[node];
+  search(key) {
+    const { ring } = this;
+    const size = ring.length;
+    let lo = -1
+    let hi = size;
+    while (1 + lo < hi) {
+      const mi = lo + ((hi - lo) >> 1);
+      if (key < ring[mi]) {
+        hi = mi;
+      } else {
+        lo = mi;
       }
     }
-    return vnodeToNodeMap[ring[0]];
+    if (hi === 0) {
+      return size - 1;
+    }
+    return hi - 1;
+  }
+
+  /**
+   * add a node to the ring
+   * @params {string} nodeId
+   */
+  addNode(nodeId) {
+    const { nodeMap, nodes, virtualNodes, assigned, vnodeToNodeMap, ring } = this;
+    nodeId = String(nodeId);
+    if (nodeMap[nodeId]) {
+      throw new Error(`Node ${nodeId} already exists in ring`);
+    }
+    // add node to lists
+    nodeMap[nodeId] = 1;
+    nodes.push(nodeId);
+    // add virtual nodes to ring
+    for (let v = 0; v < virtualNodes; v++) {
+      let nodeValue = this.getHashValue(`${nodeId}.${v}`);
+      if (assigned[nodeValue]) {
+        continue;
+      }
+      assigned[nodeValue] = 1;
+      vnodeToNodeMap[nodeValue] = nodeId;
+      if (nodeValue < ring[0]) {
+        // add to start
+        ring.unshift(nodeValue);
+      } else if (nodeValue > ring[ring.length - 1]) {
+        // add to end
+        ring.push(nodeValue);
+      } else {
+        // find nearest neighbor
+        const nearestNeighbor = this.search(nodeValue);
+        ring.splice(nearestNeighbor + 1, 0, nodeValue);
+      }
+    }
+  }
+
+  /**
+   * remove a node from the ring
+   */
+  removeNode(nodeId) {
+    const { nodeMap, nodes, virtualNodes, assigned, vnodeToNodeMap, ring } = this;
+    nodeId = String(nodeId);
+    if (!nodeMap[nodeId]) {
+      throw new Error(`Node ${nodeId} not found in ring.`);
+    }
+    // remove node from lists
+    nodeMap[nodeId] = undefined;
+    nodes.splice(nodes.indexOf(nodeId), 1);
+    for (let v = 0; v < virtualNodes; v++) {
+      let nodeValue = this.getHashValue(`${nodeId}.${v}`);
+      assigned[nodeValue] = undefined;
+      vnodeToNodeMap[nodeValue] = undefined;
+      ring.splice(this.search(nodeValue), 1);
+    }
+  }
+
+  /**
+   * Will generate a hash of the key and search for
+   * the closet match greater than or equal to the key
+   * to find the node index in the ring. Then it will
+   * use the ring node address to lookup the actual
+   * node in the virtual nodes map
+   */
+  findNode(key) {
+    const { ring, vnodeToNodeMap } = this;
+    const keyHashValue = this.getHashValue(key);
+    const nodeIndex = this.search(keyHashValue);
+    const ringNode = ring[nodeIndex];
+    return vnodeToNodeMap[ringNode];
   }
 }
 HashRing.maxHashValue = 0xFFFFFFFF;
 HashRing.prototype.nodes = [];
 HashRing.prototype.nodeSize = 0;
-HashRing.prototype.virtualNodes = 10;
+HashRing.prototype.virtualNodes = 80;
 HashRing.prototype.nodeList = [];
 HashRing.prototype.vnodeToNodeMap = Object.create(null);
+HashRing.prototype.nodeMap = Object.create(null);
 HashRing.prototype.ring = [];
-HashRing.prototype.binTree = Object.create(null);
 
 module.exports = HashRing;
