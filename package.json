@@ -1,6 +1,6 @@
 {
   "name": "node-hashring",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "A consistent hashing ring with binary search",
   "main": "index.js",
   "scripts": {

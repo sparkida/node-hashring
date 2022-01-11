@@ -64,7 +64,7 @@ class HashRing {
     let lo = -1
     let hi = size;
     while (1 + lo < hi) {
-      const mi = lo + ((hi - lo) >> 1);
+      const mi = lo + hi >> 1;
       if (key < ring[mi]) {
         hi = mi;
       } else {
